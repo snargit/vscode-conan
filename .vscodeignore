@@ -9,3 +9,5 @@ tsconfig.json
 .gitignore
 .gitattributes
 .editorconfig
+out/hostTest/**
+scripts/**

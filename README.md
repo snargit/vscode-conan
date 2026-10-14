@@ -85,6 +85,45 @@ configures. Changes to the contents of Conan profiles aren't detected; run
 - The conanfile must use the `CMakeToolchain` and `CMakeDeps` generators.
 - A hand-written `CMakeUserPresets.json` (one without a `vendor.conan` key) is never overwritten.
 
+## Agents and automation
+
+Everything the commands do can also be done without any UI, by agents and by other extensions.
+
+### Agent tools
+
+The extension contributes these language model tools, so agents such as Copilot agent mode can
+drive it. Each returns JSON. When the call fails, the JSON is `{ "error": "<message>" }`, worded
+so the agent can correct the call and retry.
+
+| Tool | Reference | Input | Effect |
+| --- | --- | --- | --- |
+| `conan_getStatus` | `#conanStatus` | `folder?` | Read-only. Returns the selected host and build profiles, whether the last install is up to date, and the available `conan-*` configure presets. |
+| `conan_listProfiles` | `#conanProfiles` | none | Read-only. Returns the output of `conan profile list`. |
+| `conan_selectProfiles` | `#conanSelectProfiles` | `folder?`, `hostProfiles`, `buildProfile?` | Saves the profiles to install, checked against `conan profile list`. The first time, it also sets the CMake Tools settings described above. It doesn't install anything. **Asks the user to confirm.** |
+| `conan_installDependencies` | `#conanInstall` | `folder?`, `force?` | Runs the installs, writes `CMakeUserPresets.json`, then selects a `conan-*` preset in CMake Tools and configures. Returns per-profile results and the configured preset. **Asks the user to confirm.** |
+
+`folder` is a workspace folder's path or name. It can be left out when only one Conan CMake
+project is open.
+
+A typical agent sequence is `conan_getStatus`, then `conan_listProfiles`, then
+`conan_selectProfiles`, then `conan_installDependencies`. Building is left to CMake Tools.
+
+### Commands with arguments
+
+Called without an argument, the commands are the interactive Command Palette versions. When
+called with an argument object, they skip all UI and return a result. On failure they reject with
+an `Error` whose message explains what to fix.
+
+```ts
+await vscode.commands.executeCommand('conan.listProfiles');                            // string[]
+await vscode.commands.executeCommand('conan.getStatus', { folder: 'hello-app' });       // status
+await vscode.commands.executeCommand('conan.selectProfiles', { hostProfiles: ['default', 'debug'], buildProfile: 'default' });
+await vscode.commands.executeCommand('conan.installDependencies', { force: false });    // install report
+```
+
+`conan.getStatus` and `conan.listProfiles` exist only for callers that pass arguments, so they're
+hidden from the Command Palette.
+
 ## Settings
 
 | Setting | Default | Description |
@@ -109,6 +148,11 @@ npm run package   # build the .vsix
   Conan command line, `CMakeUserPresets.json` handling and the fingerprint. It's unit-tested
   with Node's built-in test runner. `src/extension.ts`, `src/cmakeTools.ts` and
   `src/profilePicker.ts` are the VS Code layer.
+- **Extension-host test:** `npm run test:host` runs `src/hostTest` inside your installed VS Code.
+  It uses a throwaway profile and a scratch copy of `samples/hello-app`, and exercises the tools
+  and the commands' argument forms end to end. It needs CMake Tools installed, a `default`
+  Conan profile, and `greeting/0.1` exported to the Conan cache. It opens a VS Code window while
+  it runs, so CI doesn't run it.
 - **Debugging:** open the repo in VS Code and press F5. The `compile` task runs the TypeScript
   compiler with `node` directly, not through a shell, so terminal and PowerShell policies don't
   affect it. VS Code then launches an Extension Development Host. Open `samples/hello-app` in it

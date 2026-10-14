@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import { buildInstallArguments, parseGeneratorsFolder, parseProfileList } from '../core/conanCli';
 import { findConanProject, isConanCMakeProject } from '../core/conanProject';
 import { computeInstallFingerprint } from '../core/fingerprint';
+import { validateProfileChoice } from '../core/profileChoice';
 import { MemoryFolderStateStore } from '../core/settings';
 import {
   canWriteUserPresets,
@@ -160,5 +161,30 @@ describe('MemoryFolderStateStore', () => {
 
     assert.deepEqual(store.load('/a').hostProfiles, ['default']);
     assert.equal(store.load('/a').firstRunPromptShown, true);
+  });
+});
+
+describe('validateProfileChoice', () => {
+  const available = ['default', 'debug', 'gcc-13'];
+
+  it('accepts known profiles and removes duplicate hosts', () => {
+    assert.deepEqual(validateProfileChoice(available, ['debug', ' debug ', 'default'], 'default'),
+      { choice: { hostProfiles: ['debug', 'default'], buildProfile: 'default' } });
+  });
+
+  it('rejects an empty host list', () => {
+    assert.deepEqual(validateProfileChoice(available, ['', '  '], 'default'), { error: 'Choose at least one host profile.' });
+  });
+
+  it('names unknown host and build profiles, and lists the available ones', () => {
+    const result = validateProfileChoice(available, ['debug', 'clang'], 'msvc');
+    assert.ok('error' in result);
+    assert.match(result.error, /Unknown Conan profile\(s\): clang, msvc\./);
+    assert.match(result.error, /Available profiles: default, debug, gcc-13\./);
+  });
+
+  it('suggests creating a profile when there are none', () => {
+    const result = validateProfileChoice([], ['default'], 'default');
+    assert.ok('error' in result && result.error.includes('conan profile detect'));
   });
 });

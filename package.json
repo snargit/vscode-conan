@@ -10,7 +10,7 @@
     "url": "https://github.com/snargit/vscode-conan.git"
   },
   "engines": {
-    "vscode": "^1.88.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "Other"
@@ -26,7 +26,11 @@
   ],
   "activationEvents": [
     "workspaceContains:conanfile.py",
-    "workspaceContains:conanfile.txt"
+    "workspaceContains:conanfile.txt",
+    "onLanguageModelTool:conan_getStatus",
+    "onLanguageModelTool:conan_listProfiles",
+    "onLanguageModelTool:conan_selectProfiles",
+    "onLanguageModelTool:conan_installDependencies"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -40,6 +44,16 @@
         "command": "conan.selectProfiles",
         "title": "Select Profiles...",
         "category": "Conan"
+      },
+      {
+        "command": "conan.getStatus",
+        "title": "Get Status",
+        "category": "Conan"
+      },
+      {
+        "command": "conan.listProfiles",
+        "title": "List Profiles",
+        "category": "Conan"
       }
     ],
     "menus": {
@@ -51,6 +65,14 @@
         {
           "command": "conan.selectProfiles",
           "when": "conan.hasConanCMakeProject"
+        },
+        {
+          "command": "conan.getStatus",
+          "when": "false"
+        },
+        {
+          "command": "conan.listProfiles",
+          "when": "false"
         }
       ]
     },
@@ -64,7 +86,95 @@
           "scope": "machine-overridable"
         }
       }
-    }
+    },
+    "languageModelTools": [
+      {
+        "name": "conan_getStatus",
+        "toolReferenceName": "conanStatus",
+        "displayName": "Conan: Get Status",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(package)",
+        "userDescription": "Show the Conan profiles, install state and CMake presets for a Conan CMake project.",
+        "modelDescription": "Gets the Conan dependency status of a workspace folder that has a conanfile and a CMakeLists.txt: the selected host profiles and build profile, whether the last 'conan install' is still up to date, and the conan-* CMake configure presets available to CMake Tools. Read-only. Call this first to see whether profiles need selecting or dependencies need installing.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "folder": {
+              "type": "string",
+              "description": "Path or name of the workspace folder. Optional when only one Conan CMake project is open."
+            }
+          }
+        }
+      },
+      {
+        "name": "conan_listProfiles",
+        "toolReferenceName": "conanProfiles",
+        "displayName": "Conan: List Profiles",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-unordered)",
+        "userDescription": "List the Conan profiles that dependencies can be installed for.",
+        "modelDescription": "Lists the Conan 2 profiles available on this machine (the output of 'conan profile list'). Read-only. Use the names with conan_selectProfiles.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "conan_selectProfiles",
+        "toolReferenceName": "conanSelectProfiles",
+        "displayName": "Conan: Select Profiles",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(settings-gear)",
+        "userDescription": "Choose which Conan profiles to install dependencies for.",
+        "modelDescription": "Saves which Conan profiles a Conan CMake project installs dependencies for: one 'conan install' per host profile, all using the same build profile. Profile names must come from conan_listProfiles. The first time, it also sets cmake.configureOnOpen=false and cmake.useCMakePresets=always in the folder's .vscode/settings.json so CMake Tools waits for Conan. Does not install anything; call conan_installDependencies afterwards. Returns the updated status.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "folder": {
+              "type": "string",
+              "description": "Path or name of the workspace folder. Optional when only one Conan CMake project is open."
+            },
+            "hostProfiles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "description": "Host profiles (-pr:h), one install each."
+            },
+            "buildProfile": {
+              "type": "string",
+              "description": "Build profile (-pr:b). Defaults to the folder's current build profile ('default' unless changed)."
+            }
+          },
+          "required": [
+            "hostProfiles"
+          ]
+        }
+      },
+      {
+        "name": "conan_installDependencies",
+        "toolReferenceName": "conanInstall",
+        "displayName": "Conan: Install Dependencies",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(cloud-download)",
+        "userDescription": "Install Conan dependencies for the selected profiles, then configure with CMake Tools.",
+        "modelDescription": "Runs 'conan install' for each selected profile of a Conan CMake project, writes CMakeUserPresets.json so each profile appears as a conan-<profile>-<build type> configure preset, then selects one of those presets in CMake Tools and configures. Profiles must have been selected first (conan_selectProfiles). Skips the install if nothing has changed since the last one, unless force is true. Missing packages are built from source, which can take minutes. Returns per-profile results, the available presets and the preset that was configured. Building is done separately with CMake Tools.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "folder": {
+              "type": "string",
+              "description": "Path or name of the workspace folder. Optional when only one Conan CMake project is open."
+            },
+            "force": {
+              "type": "boolean",
+              "description": "Install even if nothing has changed since the last install. Default false."
+            }
+          }
+        }
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p .",
@@ -72,11 +182,12 @@
     "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
     "test:unit": "npm run compile && node --test --test-skip-pattern=integration \"out/test/**/*.test.js\"",
     "package": "vsce package",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "npm run compile",
+    "test:host": "npm run compile && node scripts/host-test.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "1.88.0",
+    "@types/vscode": "1.95.0",
     "@vscode/vsce": "^4.0.0",
     "typescript": "^7.0.2"
   }

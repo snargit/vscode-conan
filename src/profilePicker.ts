@@ -1,10 +1,6 @@
 import * as vscode from 'vscode';
+import { ProfileChoice } from './core/profileChoice';
 import { FolderState } from './core/settings';
-
-export interface ProfileChoice {
-  readonly hostProfiles: string[];
-  readonly buildProfile: string;
-}
 
 /**
  * Two-step picker: the host profiles to install (several allowed), then the build profile.

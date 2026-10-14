@@ -32,23 +32,27 @@ export async function ensureCMakeToolsWaitsForConan(folder: vscode.WorkspaceFold
 /**
  * Selects one of the Conan configure presets in CMake Tools, unless one already is, then
  * configures. Uses CMake Tools' commands, so it acts on CMake Tools' active folder.
+ *
+ * @returns the preset that was configured, or undefined if none could be selected.
  */
-export async function configureWithConanPreset(presetNames: readonly string[], log: (line: string) => void): Promise<void> {
+export async function configureWithConanPreset(presetNames: readonly string[], log: (line: string) => void): Promise<string | undefined> {
   if (presetNames.length === 0) {
-    return;
+    return undefined;
   }
 
-  const active = await activeConfigurePreset();
+  let active = await activeConfigurePreset();
   if (active === undefined || !presetNames.includes(active)) {
     const target = presetNames[0];
     if (!await trySelectConfigurePreset(target)) {
       log(`Couldn't select the '${target}' configure preset in CMake Tools. `
         + 'Choose one with "CMake: Select Configure Preset", then run "CMake: Configure".');
-      return;
+      return undefined;
     }
+    active = target;
   }
 
   await vscode.commands.executeCommand('cmake.configure');
+  return active;
 }
 
 /**
