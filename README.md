@@ -99,6 +99,12 @@ npm test          # compile, then run all tests (the integration tests need cona
 npm run package   # build the .vsix
 ```
 
+- **Lockfile:** `package-lock.json` must resolve packages from `https://registry.npmjs.org/`,
+  because CI can't reach private npm mirrors. CI checks this before installing. If your npm uses a
+  mirror, `npm install` records the mirror's URLs. If the mirror uses the same package paths as
+  npm (Artifactory npm remotes do), rewrite the prefix back to `https://registry.npmjs.org/`
+  before committing. npm still installs from your mirror locally, because it maps
+  `registry.npmjs.org` URLs in the lockfile to your configured registry.
 - **Layout:** `src/core` is plain Node code with no `vscode` dependency: project detection, the
   Conan command line, `CMakeUserPresets.json` handling and the fingerprint. It's unit-tested
   with Node's built-in test runner. `src/extension.ts`, `src/cmakeTools.ts` and

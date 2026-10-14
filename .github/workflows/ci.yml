@@ -34,6 +34,16 @@ jobs:
           pip install "conan>=2,<3"
           conan profile detect
 
+      # A lockfile generated behind a private npm mirror records the mirror's URLs, which the
+      # runners can't reach ('npm ci' then fails with "Exit handler never called!").
+      - name: Check lockfile uses the public npm registry
+        shell: bash
+        run: |
+          if grep '"resolved": "' package-lock.json | grep -v '"resolved": "https://registry.npmjs.org/'; then
+            echo "::error file=package-lock.json::package-lock.json must resolve packages from https://registry.npmjs.org/. See 'Development' in README.md."
+            exit 1
+          fi
+
       - run: npm ci
 
       - run: npm test
