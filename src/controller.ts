@@ -4,6 +4,7 @@ import { configureWithConanPreset, ensureCMakeToolsWaitsForConan } from './cmake
 import { ConanCli } from './core/conanCli';
 import { ConanProject, findConanProject, isConanCMakeProject } from './core/conanProject';
 import { currentConfigurePresetNames, isUpToDate, SyncResult, syncDependencies } from './core/dependencySync';
+import { ChangeWatcher } from './changeWatcher';
 import { ProfileChoice, validateProfileChoice } from './core/profileChoice';
 import { FolderStateStore } from './core/settings';
 import { pickProfiles } from './profilePicker';
@@ -38,6 +39,8 @@ export interface InstallReport {
 }
 
 const CHOOSE_PROFILES = 'Choose Profiles...';
+const INSTALL_NOW = 'Install Now';
+const ALWAYS_INSTALL = 'Always Install Automatically';
 const NOT_NOW = 'Not now';
 
 /**
@@ -47,8 +50,23 @@ const NOT_NOW = 'Not now';
  */
 export class ConanController {
   private readonly busy = new Set<string>();
+  /** Folders whose inputs changed during an install, to recheck when it finishes. */
+  private readonly recheckAfterInstall = new Set<string>();
+  /** Folders with an out-of-date prompt showing, so changes don't stack prompts. */
+  private readonly prompting = new Set<string>();
+  readonly watcher: ChangeWatcher;
 
-  constructor(private readonly store: FolderStateStore, private readonly output: vscode.OutputChannel) {}
+  constructor(private readonly store: FolderStateStore, private readonly output: vscode.OutputChannel) {
+    this.watcher = new ChangeWatcher(
+      (folder, reasons) => this.onInputsChanged(folder, reasons),
+      async folder => {
+        try {
+          return await this.cli(folder).configHome();
+        } catch {
+          return undefined; // Conan missing or broken: there's nothing to watch.
+        }
+      });
+  }
 
   // ---- Operations without UI -------------------------------------------------------------------
 
@@ -85,7 +103,7 @@ export class ConanController {
     return this.cli(folder).listProfiles(signal);
   }
 
-  getStatus(folder: vscode.WorkspaceFolder): ConanStatus {
+  async getStatus(folder: vscode.WorkspaceFolder): Promise<ConanStatus> {
     const project = this.project(folder);
     const state = this.store.load(project.rootDirectory);
     return {
@@ -95,7 +113,7 @@ export class ConanController {
       usesCmakeLayout: project.usesCmakeLayout,
       hostProfiles: state.hostProfiles,
       buildProfile: state.buildProfile,
-      upToDate: state.hostProfiles.length > 0 && isUpToDate(project, this.store),
+      upToDate: state.hostProfiles.length > 0 && await isUpToDate(project, this.store, this.cli(folder)),
       configurePresets: currentConfigurePresetNames(project.rootDirectory),
     };
   }
@@ -140,6 +158,8 @@ export class ConanController {
       if (!project) {
         return;
       }
+
+      void this.watcher.watch(folder);
 
       const state = this.store.load(project.rootDirectory);
       if (state.hostProfiles.length === 0) {
@@ -262,8 +282,8 @@ export class ConanController {
     this.busy.add(directory);
     try {
       let result: SyncResult;
-      if (!force && isUpToDate(project, this.store)) {
-        result = await syncDependencies(project, this.store, this.cli(folder), { force, onLine: () => {} });
+      if (!force && await isUpToDate(project, this.store, this.cli(folder))) {
+        result = { outcome: 'upToDate', profiles: [], configurePresetNames: currentConfigurePresetNames(directory) };
       } else {
         if (!project.usesCmakeLayout) {
           this.output.appendLine(`Warning: ${project.conanfilePath} doesn't appear to use cmake_layout. `
@@ -277,8 +297,9 @@ export class ConanController {
             const abort = new AbortController();
             token.onCancellationRequested(() => abort.abort());
             cancellation?.onCancellationRequested(() => abort.abort());
+            // Already known to be out of date (or forced), so don't check again.
             return syncDependencies(project, this.store, this.cli(folder), {
-              force,
+              force: true,
               onLine: line => this.output.appendLine(line),
               signal: abort.signal,
             });
@@ -299,6 +320,59 @@ export class ConanController {
       };
     } finally {
       this.busy.delete(directory);
+      if (this.recheckAfterInstall.delete(directory)) {
+        void this.onInputsChanged(folder, ['files changed during the install']);
+      }
+    }
+  }
+
+  /**
+   * Called (debounced) when a folder's conanfile, conan.lock, conandata.yml, .conanrc or Conan
+   * profiles change. If the install is now out of date, offers to reinstall, or reinstalls straight
+   * away when conan.autoInstallOnChange is on.
+   */
+  private async onInputsChanged(folder: vscode.WorkspaceFolder, reasons: string[]): Promise<void> {
+    try {
+      const project = findConanProject(folder.uri.fsPath);
+      if (!project || this.store.load(project.rootDirectory).hostProfiles.length === 0) {
+        return;
+      }
+
+      const directory = project.rootDirectory;
+      if (this.busy.has(directory)) {
+        this.recheckAfterInstall.add(directory);
+        return;
+      }
+
+      if (this.prompting.has(directory) || await isUpToDate(project, this.store, this.cli(folder))) {
+        return;
+      }
+
+      const why = reasons.join('; ');
+      this.output.appendLine(`Conan dependencies for '${folder.name}' are out of date: ${why}.`);
+      if (vscode.workspace.getConfiguration('conan', folder.uri).get<boolean>('autoInstallOnChange')) {
+        await this.sync(folder, project, false);
+        return;
+      }
+
+      this.prompting.add(directory);
+      let choice: string | undefined;
+      try {
+        choice = await vscode.window.showInformationMessage(
+          `Conan dependencies for '${folder.name}' are out of date (${why}).`, INSTALL_NOW, ALWAYS_INSTALL);
+      } finally {
+        this.prompting.delete(directory);
+      }
+
+      if (choice === ALWAYS_INSTALL) {
+        await vscode.workspace.getConfiguration('conan', folder.uri)
+          .update('autoInstallOnChange', true, vscode.ConfigurationTarget.Global);
+      }
+      if (choice === INSTALL_NOW || choice === ALWAYS_INSTALL) {
+        await this.sync(folder, project, false);
+      }
+    } catch (error) {
+      this.reportError(error);
     }
   }
 
@@ -351,7 +425,8 @@ export class ConanController {
   }
 
   private cli(folder?: vscode.WorkspaceFolder): ConanCli {
-    return new ConanCli(vscode.workspace.getConfiguration('conan', folder?.uri).get<string>('executable') || 'conan');
+    // Run in the folder so Conan honours a .conanrc there (see ConanCli).
+    return new ConanCli(vscode.workspace.getConfiguration('conan', folder?.uri).get<string>('executable') || 'conan', folder?.uri.fsPath);
   }
 
   /** Reports a failure from an interactive flow to the user. */

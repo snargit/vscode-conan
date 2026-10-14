@@ -28,7 +28,7 @@ describe('syncDependencies (integration)', { skip: hasConan ? false : 'Conan 2 i
       await store.save(dir.path, { ...store.load(dir.path), hostProfiles: ['default'] });
       const output: string[] = [];
 
-      const result = await syncDependencies(project, store, new ConanCli(), {
+      const result = await syncDependencies(project, store, new ConanCli('conan', dir.path), {
         force: false,
         onLine: line => {
           output.push(line);
@@ -46,11 +46,39 @@ describe('syncDependencies (integration)', { skip: hasConan ? false : 'Conan 2 i
       assert.equal(includes.length, 1);
       assert.ok(includes[0].includes(path.join('build', 'default')), includes[0]);
       assert.ok(fs.existsSync(includes[0]));
-      assert.ok(isUpToDate(project, store));
+      assert.ok(await isUpToDate(project, store, new ConanCli('conan', dir.path)));
 
-      const again = await syncDependencies(project, store, new ConanCli(), { force: false, onLine: () => {} });
+      const again = await syncDependencies(project, store, new ConanCli('conan', dir.path), { force: false, onLine: () => {} });
       assert.equal(again.outcome, 'upToDate');
       assert.deepEqual(again.configurePresetNames, ['conan-default-release']);
+    } finally {
+      dir.dispose();
+    }
+  });
+
+  it("uses the project's .conanrc Conan home and notices a profile edit", async () => {
+    const dir = new TempDirectory();
+    try {
+      const project = createProject(dir);
+      // A Conan home of the project's own, so the user's real profiles are never touched.
+      dir.write('.conanrc', 'conan_home=./conan-home\n');
+      const cli = new ConanCli('conan', dir.path);
+      assert.ok((await cli.configHome()).endsWith('conan-home'), 'conan config home ignored the .conanrc');
+      assert.equal(spawnSync('conan', ['profile', 'detect'], { cwd: dir.path, shell: false }).status, 0);
+      const profile = path.join(dir.path, 'conan-home', 'profiles', 'default');
+      assert.ok(fs.existsSync(profile));
+
+      const store = new MemoryFolderStateStore();
+      await store.save(dir.path, { ...store.load(dir.path), hostProfiles: ['default'] });
+      const result = await syncDependencies(project, store, cli, { force: false, onLine: () => {} });
+      assert.equal(result.outcome, 'installed');
+      assert.ok(await isUpToDate(project, store, cli));
+
+      // Saving the profile unchanged isn't a change; editing what it resolves to is.
+      fs.writeFileSync(profile, fs.readFileSync(profile));
+      assert.ok(await isUpToDate(project, store, cli));
+      fs.appendFileSync(profile, '\n[conf]\ntools.build:jobs=3\n');
+      assert.equal(await isUpToDate(project, store, cli), false);
     } finally {
       dir.dispose();
     }

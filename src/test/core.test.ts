@@ -133,18 +133,39 @@ describe('CMakeUserPresets.json', () => {
 });
 
 describe('computeInstallFingerprint', () => {
-  it('changes with the conanfile and the profiles', () => withTempDirectory(dir => {
+  const inputs = (overrides: Partial<{ home: string; profiles: string[] }> = {}) =>
+    ({ home: '/conan-home', profiles: ['{"host": {}}'], ...overrides });
+
+  it('changes with the project files', () => withTempDirectory(dir => {
     dir.write('CMakeLists.txt');
     const conanfile = dir.write('conanfile.txt', '[requires]\nzlib/1.3\n');
     const project = () => findConanProject(dir.path)!;
-
-    const original = computeInstallFingerprint(project(), ['default'], 'default');
-    assert.equal(computeInstallFingerprint(project(), ['default'], 'default'), original);
-    assert.notEqual(computeInstallFingerprint(project(), ['default', 'debug'], 'default'), original);
-    assert.notEqual(computeInstallFingerprint(project(), ['default'], 'debug'), original);
+    const original = computeInstallFingerprint(project(), ['default'], 'default', inputs());
+    assert.equal(computeInstallFingerprint(project(), ['default'], 'default', inputs()), original);
 
     fs.writeFileSync(conanfile, '[requires]\nzlib/1.3.1\n');
-    assert.notEqual(computeInstallFingerprint(project(), ['default'], 'default'), original);
+    const afterConanfile = computeInstallFingerprint(project(), ['default'], 'default', inputs());
+    assert.notEqual(afterConanfile, original);
+
+    for (const name of ['conan.lock', 'conandata.yml']) {
+      const before = computeInstallFingerprint(project(), ['default'], 'default', inputs());
+      dir.write(name, 'something');
+      assert.notEqual(computeInstallFingerprint(project(), ['default'], 'default', inputs()), before, name);
+    }
+  }));
+
+  it('changes with the profiles and the Conan home', () => withTempDirectory(dir => {
+    dir.write('CMakeLists.txt');
+    dir.write('conanfile.txt', '[requires]\nzlib/1.3\n');
+    const project = findConanProject(dir.path)!;
+    const original = computeInstallFingerprint(project, ['default'], 'default', inputs());
+
+    assert.notEqual(computeInstallFingerprint(project, ['default', 'debug'], 'default', inputs({ profiles: ['{}', '{}'] })), original);
+    assert.notEqual(computeInstallFingerprint(project, ['default'], 'debug', inputs()), original);
+    // The same profile name resolving differently (the profile, or one it includes, was edited).
+    assert.notEqual(computeInstallFingerprint(project, ['default'], 'default', inputs({ profiles: ['{"host": {"x": 1}}'] })), original);
+    // A different Conan home (CONAN_HOME or a .conanrc).
+    assert.notEqual(computeInstallFingerprint(project, ['default'], 'default', inputs({ home: '/other-home' })), original);
   }));
 });
 

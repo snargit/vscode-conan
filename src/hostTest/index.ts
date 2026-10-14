@@ -77,6 +77,19 @@ async function runSteps(): Promise<void> {
   assert.equal(after.upToDate, true);
   assert.deepEqual(after.configurePresets, ['conan-default-release']);
 
+  step('a conanfile edit is noticed and, with conan.autoInstallOnChange, reinstalled');
+  await vscode.workspace.getConfiguration('conan').update('autoInstallOnChange', true, vscode.ConfigurationTarget.Global);
+  fs.appendFileSync(path.join(folder, 'conanfile.txt'), '\n# edited by the host test\n');
+  const stale = await vscode.commands.executeCommand<Record<string, unknown>>('conan.getStatus', {});
+  assert.equal(stale.upToDate, false, 'the edit should make the install out of date');
+  // The watcher waits for changes to settle, then reinstalls; the status turns up to date again.
+  let reinstalled = false;
+  for (let attempt = 0; attempt < 60 && !reinstalled; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    reinstalled = (await vscode.commands.executeCommand<Record<string, unknown>>('conan.getStatus', {})).upToDate === true;
+  }
+  assert.ok(reinstalled, 'no reinstall within 60 seconds of the conanfile edit');
+
   step('conan_getStatus tool reports a bad folder as an error result');
   const bad = await invokeReadOnlyTool('conan_getStatus', { folder: 'not-a-folder' }) as { error?: string };
   assert.match(bad.error ?? '', /isn't an open workspace folder/);

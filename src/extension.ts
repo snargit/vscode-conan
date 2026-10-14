@@ -35,8 +35,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     ...registerTools(controller),
 
+    controller.watcher,
     vscode.workspace.onDidChangeWorkspaceFolders(event => {
       void controller.updateContext();
+      event.removed.forEach(folder => controller.watcher.unwatch(folder));
       event.added.forEach(folder => void controller.onFolderOpened(folder));
     }),
   );

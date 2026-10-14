@@ -72,10 +72,34 @@ These are ordinary workspace settings, so they take effect from the very start o
 open. The Conan output channel notes when they're written. If `.vscode/settings.json` is
 committed to your repo, decide whether to commit them too.
 
-On later opens, the extension compares a fingerprint of the conanfile, `conan.lock` and the
-selected profiles with the last successful install. It runs Conan only if they differ, then
-configures. Changes to the contents of Conan profiles aren't detected; run
-**Conan: Install Dependencies** after editing one.
+On later opens, the extension compares a fingerprint of the Conan inputs (below) with the last
+successful install. It runs Conan only if they differ, then configures.
+
+### Keeping dependencies up to date
+
+The install is out of date when any of these changes:
+
+- `conanfile.py` or `conanfile.txt`, `conan.lock`, or `conandata.yml` in the project folder;
+- the Conan home in use, from `CONAN_HOME` or a `.conanrc`;
+- a selected profile, **as Conan resolves it**. The fingerprint uses `conan profile show` output,
+  so editing a profile, or a profile it `include()`s, counts. Editing an unrelated profile, or
+  re-saving one unchanged, doesn't.
+
+These are checked whenever the folder opens. While it's open, the extension also watches them:
+those project files, the project's `.conanrc`, and the `profiles` folder of the folder's Conan
+home. A burst of changes is treated as one, about two seconds after the last. Only a real
+difference counts.
+
+When the install is out of date, a notification offers **Install Now**, or
+**Always Install Automatically**, which turns on `conan.autoInstallOnChange` in your user
+settings. With that setting on, the extension reinstalls straight away without asking. If files
+change during an install, they're checked again once it finishes.
+
+Conan picks its home from a `.conanrc` (`conan_home=…`) in the working directory or any parent,
+before `CONAN_HOME` and `~/.conan2`. So every `conan` command runs in the project folder, and a
+project-specific Conan home is honoured throughout: profile list, profile show and install.
+Only a `.conanrc` in the project folder itself is watched. If one in a parent folder changes,
+the next check (on reopen, or the next watched change) picks it up.
 
 ### Requirements for the consuming project
 
@@ -129,6 +153,7 @@ hidden from the Command Palette.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `conan.executable` | `conan` | The Conan 2 executable. Use a full path if Conan isn't on PATH. |
+| `conan.autoInstallOnChange` | `false` | Reinstall automatically when the Conan inputs change, instead of asking first. |
 
 ## Development
 

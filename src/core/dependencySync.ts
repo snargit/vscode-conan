@@ -29,14 +29,45 @@ export interface SyncResult {
   readonly configurePresetNames: readonly string[];
 }
 
-export function isUpToDate(project: ConanProject, store: FolderStateStore): boolean {
+/**
+ * The fingerprint of the folder's current Conan inputs, or undefined if a selected profile can't
+ * be resolved (e.g. it was deleted), which callers treat as out of date.
+ */
+export async function currentInstallFingerprint(
+  project: ConanProject,
+  store: FolderStateStore,
+  cli: ConanCli,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
   const state = store.load(project.rootDirectory);
-  if (state.installFingerprint !== computeInstallFingerprint(project, state.hostProfiles, state.buildProfile)) {
+  try {
+    const home = await cli.configHome(signal);
+    const profiles: string[] = [];
+    for (const host of state.hostProfiles) {
+      profiles.push(await cli.showProfiles(host, state.buildProfile, signal));
+    }
+    return computeInstallFingerprint(project, state.hostProfiles, state.buildProfile, { home, profiles });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
+    }
+    return undefined;
+  }
+}
+
+/**
+ * True if the last successful install still matches the conanfile, conan.lock, conandata.yml and
+ * the Conan home and selected profiles as Conan resolves them now. Runs 'conan config home' and
+ * 'conan profile show' (once per host profile), so `cli` should run in the project folder.
+ */
+export async function isUpToDate(project: ConanProject, store: FolderStateStore, cli: ConanCli, signal?: AbortSignal): Promise<boolean> {
+  const state = store.load(project.rootDirectory);
+  const includes = readUserPresetsIncludes(project.rootDirectory);
+  if (!state.installFingerprint || includes.length === 0 || !includes.every(file => fs.existsSync(file))) {
     return false;
   }
 
-  const includes = readUserPresetsIncludes(project.rootDirectory);
-  return includes.length > 0 && includes.every(file => fs.existsSync(file));
+  return state.installFingerprint === await currentInstallFingerprint(project, store, cli, signal);
 }
 
 /** Configure presets from the files CMakeUserPresets.json currently includes. */
@@ -58,7 +89,7 @@ export async function syncDependencies(
   const directory = project.rootDirectory;
   const { onLine } = options;
 
-  if (!options.force && isUpToDate(project, store)) {
+  if (!options.force && await isUpToDate(project, store, cli, options.signal)) {
     return { outcome: 'upToDate', profiles: [], configurePresetNames: currentConfigurePresetNames(directory) };
   }
 
@@ -68,6 +99,9 @@ export async function syncDependencies(
     return { outcome: 'userPresetsNotOwned', profiles: [], configurePresetNames: [] };
   }
 
+  // Fingerprint the inputs before installing: if they change during the install, the saved
+  // fingerprint no longer matches them and the next check reports the install as out of date.
+  const fingerprint = await currentInstallFingerprint(project, store, cli, options.signal);
   const state = store.load(directory);
   const results: ProfileInstallResult[] = [];
 
@@ -102,9 +136,7 @@ export async function syncDependencies(
   writeUserPresets(directory, presets);
 
   const latest = store.load(directory);
-  latest.installFingerprint = allSucceeded
-    ? computeInstallFingerprint(project, latest.hostProfiles, latest.buildProfile)
-    : undefined;
+  latest.installFingerprint = allSucceeded ? fingerprint : undefined;
   await store.save(directory, latest);
 
   return {
