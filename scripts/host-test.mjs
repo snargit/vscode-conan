@@ -29,7 +29,9 @@ const result = spawnSync(findVSCode(), [
   `--extensionTestsPath=${path.join(repo, 'out', 'hostTest', 'index.js')}`,
   workspace,
 ], {
-  stdio: 'inherit',
+  // VS Code's own console output isn't needed (results come from the log file) and mustn't be shown:
+  // extensions' debug logging, e.g. CMake Tools', can include the full environment, secrets and all.
+  stdio: 'ignore',
   env: { ...process.env, VSCODE_CONAN_HOST_TEST_LOG: logFile },
 });
 
