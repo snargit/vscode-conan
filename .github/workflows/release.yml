@@ -1,0 +1,56 @@
+name: Release
+
+# Push a tag like v1.2.3 to test, package and publish a GitHub release with the .vsix attached.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read version from tag
+        id: version
+        run: |
+          tag='${{ github.ref_name }}'
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::Tag '$tag' must look like v1.2.3."
+            exit 1
+          fi
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan
+        run: |
+          pip install "conan>=2,<3"
+          conan profile detect
+
+      - run: npm ci
+
+      - name: Stamp version
+        run: npm version '${{ steps.version.outputs.version }}' --no-git-tag-version --allow-same-version
+
+      - run: npm test
+
+      - name: Package
+        run: npx vsce package --out 'vscode-conan-${{ steps.version.outputs.version }}.vsix'
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' 'vscode-conan-${{ steps.version.outputs.version }}.vsix' \
+            --title 'Conan for CMake Tools ${{ steps.version.outputs.version }}' --generate-notes --verify-tag

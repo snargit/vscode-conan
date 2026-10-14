@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // Runs the TypeScript compiler directly with node: no shell, so terminal profiles and
+      // PowerShell's script execution policy (which can block npm.ps1) don't matter.
+      "label": "compile",
+      "type": "process",
+      "command": "node",
+      "args": ["${workspaceFolder}/node_modules/typescript/bin/tsc", "-p", "${workspaceFolder}"],
+      "problemMatcher": "$tsc",
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}

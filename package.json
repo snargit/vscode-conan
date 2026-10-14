@@ -1,0 +1,83 @@
+{
+  "name": "vscode-conan",
+  "displayName": "Conan for CMake Tools",
+  "description": "Installs Conan 2 dependencies for each selected Conan profile and hands the CMake presets to CMake Tools.",
+  "version": "0.1.0",
+  "publisher": "snargit",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/snargit/vscode-conan.git"
+  },
+  "engines": {
+    "vscode": "^1.88.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "conan",
+    "cmake",
+    "c++",
+    "dependencies"
+  ],
+  "extensionDependencies": [
+    "ms-vscode.cmake-tools"
+  ],
+  "activationEvents": [
+    "workspaceContains:conanfile.py",
+    "workspaceContains:conanfile.txt"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "conan.installDependencies",
+        "title": "Install Dependencies",
+        "category": "Conan"
+      },
+      {
+        "command": "conan.selectProfiles",
+        "title": "Select Profiles...",
+        "category": "Conan"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "conan.installDependencies",
+          "when": "conan.hasConanCMakeProject"
+        },
+        {
+          "command": "conan.selectProfiles",
+          "when": "conan.hasConanCMakeProject"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Conan",
+      "properties": {
+        "conan.executable": {
+          "type": "string",
+          "default": "conan",
+          "description": "The Conan 2 executable to run. Use a full path if Conan isn't on PATH.",
+          "scope": "machine-overridable"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
+    "test:unit": "npm run compile && node --test --test-skip-pattern=integration \"out/test/**/*.test.js\"",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "1.88.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^7.0.2"
+  }
+}

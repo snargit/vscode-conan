@@ -1,0 +1,11 @@
+.github/**
+.vscode/**
+src/**
+samples/**
+out/test/**
+**/*.map
+**/*.ts
+tsconfig.json
+.gitignore
+.gitattributes
+.editorconfig

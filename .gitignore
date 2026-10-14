@@ -1,0 +1,10 @@
+node_modules/
+out/
+*.vsix
+.vscode-test/
+
+# Conan/CMake output in the samples
+samples/**/build/
+samples/**/CMakeUserPresets.json
+# Written by the extension when testing (cmake.configureOnOpen etc.); the samples' launch.json is tracked.
+samples/**/.vscode/settings.json

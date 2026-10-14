@@ -1,0 +1,24 @@
+{
+  // F5 builds and debugs the CMake Tools launch target: resolving ${command:cmake.launchTargetPath}
+  // builds it first (cmake.buildBeforeRun, on by default) using the selected conan-* preset.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug (MSVC)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Debug (GDB/LLDB)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "cwd": "${workspaceFolder}",
+      "linux": { "MIMode": "gdb" },
+      "osx": { "MIMode": "lldb" }
+    }
+  ]
+}
