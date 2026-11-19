@@ -148,10 +148,27 @@ function endpointsDirectory() {
   }
 }
 
+/**
+ * Whether `child` is `parent` or inside it, as spelled or with symlinks resolved: VS Code keeps a
+ * folder as it was opened, while a terminal's working directory may be the real path (on macOS,
+ * /var and /tmp are links into /private).
+ */
 function contains(parent, child) {
-  const normalize = p => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+  return within(path.resolve(parent), path.resolve(child)) || within(realPath(parent), realPath(child));
+}
+
+function within(parent, child) {
+  const normalize = p => (process.platform === 'win32' ? p.toLowerCase() : p);
   const relative = path.relative(normalize(parent), normalize(child));
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function realPath(p) {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
 }
 
 function isRunning(pid) {

@@ -222,6 +222,22 @@ describe('the external endpoint and the skill script', () => {
     });
   });
 
+  it('matches a workspace folder opened through a symlink by its real path', async () => {
+    const requests: EndpointRequest[] = [];
+    await withEndpoint(async request => {
+      requests.push(request);
+      return {};
+    }, async ({ dir, endpoints, workspace, endpoint }) => {
+      // As on macOS, where VS Code keeps /var/... and a terminal's working directory is /private/var/...
+      const link = path.join(dir.path, 'link');
+      fs.symlinkSync(workspace, link, 'junction');
+      endpoint.setFolders([link]);
+      const { code } = await runScript(['getStatus', '--folder', path.join(workspace, 'src')], { VSCODE_CONAN_ENDPOINTS_DIR: endpoints });
+      assert.equal(code, 0);
+      assert.deepEqual(requests.map(r => r.arguments), [{ folder: link }]);
+    });
+  });
+
   it('passes the profiles and force', async () => {
     const requests: EndpointRequest[] = [];
     await withEndpoint(async request => {
