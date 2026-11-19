@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { ConanController, describeError } from './controller';
 import { defaultFolderState, FolderState, FolderStateStore } from './core/settings';
+import { ExternalCallers } from './externalCallers';
 import { registerTools } from './tools';
 
 /** Optional argument for the commands, for other extensions, tasks, keybindings and agents. */
@@ -34,6 +35,7 @@ export function activate(context: vscode.ExtensionContext): void {
       withoutUi(() => controller.listProfiles(args?.folder ? controller.resolveFolder(args.folder) : undefined))),
 
     ...registerTools(controller),
+    new ExternalCallers(controller, output),
 
     controller.watcher,
     vscode.workspace.onDidChangeWorkspaceFolders(event => {

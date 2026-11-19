@@ -1,0 +1,9 @@
+{
+  "name": "vscode-conan",
+  "description": "Teaches agents to install a VS Code CMake project's Conan dependencies through the Conan for CMake Tools extension, instead of running conan install in a terminal.",
+  "author": { "name": "Conan for CMake Tools", "url": "https://github.com/snargit/vscode-conan" },
+  "homepage": "https://github.com/snargit/vscode-conan",
+  "repository": "https://github.com/snargit/vscode-conan",
+  "license": "MIT",
+  "keywords": ["conan", "cmake", "vscode", "cmake-tools", "c++"]
+}

@@ -90,6 +90,12 @@
           "default": false,
           "scope": "resource",
           "description": "Reinstall Conan dependencies automatically when the conanfile, conan.lock, conandata.yml, .conanrc or a selected Conan profile changes, instead of asking first."
+        },
+        "conan.allowExternalCallers": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "markdownDescription": "Let agents outside VS Code's chat, such as Claude Code or Codex in a terminal, run the extension's operations (status, profiles, install) through the script in its agent skill. Each VS Code window listens on a named pipe or Unix socket that only processes able to read your own files can use."
         }
       }
     },
@@ -101,7 +107,7 @@
         "canBeReferencedInPrompt": true,
         "icon": "$(package)",
         "userDescription": "Show the Conan profiles, install state and CMake presets for a Conan CMake project.",
-        "modelDescription": "Gets the Conan dependency status of a workspace folder that has a conanfile and a CMakeLists.txt: the selected host profiles and build profile, whether the last 'conan install' is still up to date, and the conan-* CMake configure presets available to CMake Tools. Read-only. Call this first to see whether profiles need selecting or dependencies need installing.",
+        "modelDescription": "Gets the Conan dependency status of a workspace folder that has a conanfile and a CMakeLists.txt: the selected host profiles and build profile, the profiles available (availableProfiles, from 'conan profile list'), whether the last 'conan install' is still up to date, whether an install is running, the conan-* CMake configure presets available to CMake Tools, and cmakeUsage: per host profile, the find_package names and link targets of the direct dependencies, from its last successful install. hints, when present, say what to do next. Read-only. Call this first to see whether profiles need selecting or dependencies need installing.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -165,7 +171,7 @@
         "canBeReferencedInPrompt": true,
         "icon": "$(cloud-download)",
         "userDescription": "Install Conan dependencies for the selected profiles, then configure with CMake Tools.",
-        "modelDescription": "Runs 'conan install' for each selected profile of a Conan CMake project, writes CMakeUserPresets.json so each profile appears as a conan-<profile>-<build type> configure preset, then selects one of those presets in CMake Tools and configures. Profiles must have been selected first (conan_selectProfiles). Skips the install if nothing has changed since the last one, unless force is true. Missing packages are built from source, which can take minutes. Returns per-profile results, the available presets and the preset that was configured. Building is done separately with CMake Tools.",
+        "modelDescription": "Runs 'conan install' for each selected profile of a Conan CMake project, writes CMakeUserPresets.json so each profile appears as a conan-<profile>-<build type> configure preset, then selects one of those presets in CMake Tools and configures. Run it after changing the conanfile, conandata.yml or conan.lock, instead of running conan install in a terminal. Profiles must have been selected first (conan_selectProfiles). Skips the install if nothing has changed since the last one, unless force is true; waits for an install that's already running. Missing packages are built from source, which can take minutes. The result's outcome is installed, upToDate, partiallyFailed or userPresetsNotOwned. A failed profile's errorOutput has the end of Conan's output, where it reports the error. cmakeUsage gives each profile's find_package names and link targets: use those in CMakeLists.txt, not names guessed from the package. hints, when present, say what to do next; one that says to ask the user means ask before doing it. Building is done separately with CMake Tools.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -179,6 +185,11 @@
             }
           }
         }
+      }
+    ],
+    "chatSkills": [
+      {
+        "path": "./skills/vscode-conan/SKILL.md"
       }
     ]
   },

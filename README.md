@@ -112,25 +112,126 @@ the next check (on reopen, or the next watched change) picks it up.
 ## Agents and automation
 
 Everything the commands do can also be done without any UI, by agents and by other extensions.
+There are four operations, reached three ways:
+
+| Operation | Agent tool | Command | Skill script |
+| --- | --- | --- | --- |
+| Status | `conan_getStatus` | `conan.getStatus` | `getStatus` |
+| List profiles | `conan_listProfiles` | `conan.listProfiles` | `listProfiles` |
+| Select profiles | `conan_selectProfiles` | `conan.selectProfiles` | `selectProfiles` |
+| Install | `conan_installDependencies` | `conan.installDependencies` | `installDependencies` |
+
+### Agent skill
+
+[`skills/vscode-conan`](skills/vscode-conan/SKILL.md) is an [Agent Skill](https://agentskills.io)
+that teaches a coding agent to work with the extension. It covers adding a dependency end to end,
+the rules a conanfile must follow, profiles, which files not to edit, and reading results and
+hints. It tells the agent to install through the extension rather than running `conan install`
+in a terminal.
+
+- **Copilot in VS Code** gets it with the extension (through `chatSkills`, VS Code 1.109 or later),
+  with no setup.
+- **Claude Code** (its VS Code extension or CLI), as a plugin from this repository:
+
+  ```
+  claude plugin marketplace add snargit/vscode-conan
+  claude plugin install vscode-conan@vscode-conan
+  ```
+
+  Or, in a session, `/plugin install vscode-conan --marketplace snargit/vscode-conan`.
+- **Other agents**: copy `skills/vscode-conan` into the folder where the agent looks for skills.
+  That is `~/.agents/skills` or a project's `.agents/skills` for Codex, and `~/.claude/skills` or
+  `.claude/skills` for Claude Code without the plugin.
 
 ### Agent tools
 
-The extension contributes these language model tools, so agents such as Copilot agent mode can
-drive it. Each returns JSON. When the call fails, the JSON is `{ "error": "<message>" }`, worded
-so the agent can correct the call and retry.
+The extension contributes these language model tools, so agents in VS Code's chat, such as
+Copilot agent mode, can drive it. Each returns JSON. When the call fails, the JSON is
+`{ "error": "<message>" }`, worded so the agent can correct the call and retry.
 
 | Tool | Reference | Input | Effect |
 | --- | --- | --- | --- |
-| `conan_getStatus` | `#conanStatus` | `folder?` | Read-only. Returns the selected host and build profiles, whether the last install is up to date, and the available `conan-*` configure presets. |
+| `conan_getStatus` | `#conanStatus` | `folder?` | Read-only. Returns the [status](#results). |
 | `conan_listProfiles` | `#conanProfiles` | none | Read-only. Returns the output of `conan profile list`. |
-| `conan_selectProfiles` | `#conanSelectProfiles` | `folder?`, `hostProfiles`, `buildProfile?` | Saves the profiles to install, checked against `conan profile list`. The first time, it also sets the CMake Tools settings described above. It doesn't install anything. **Asks the user to confirm.** |
-| `conan_installDependencies` | `#conanInstall` | `folder?`, `force?` | Runs the installs, writes `CMakeUserPresets.json`, then selects a `conan-*` preset in CMake Tools and configures. Returns per-profile results and the configured preset. **Asks the user to confirm.** |
+| `conan_selectProfiles` | `#conanSelectProfiles` | `folder?`, `hostProfiles`, `buildProfile?` | Saves the profiles to install, checked against `conan profile list`. The first time, it also sets the CMake Tools settings described above. It doesn't install anything. Returns the status. **Asks the user to confirm.** |
+| `conan_installDependencies` | `#conanInstall` | `folder?`, `force?` | Runs the installs (after any install already running for the folder), writes `CMakeUserPresets.json`, then selects a `conan-*` preset in CMake Tools and configures. Returns the [install report](#results). **Asks the user to confirm.** |
 
 `folder` is a workspace folder's path or name. It can be left out when only one Conan CMake
 project is open.
 
-A typical agent sequence is `conan_getStatus`, then `conan_listProfiles`, then
-`conan_selectProfiles`, then `conan_installDependencies`. Building is left to CMake Tools.
+A typical agent sequence is `conan_getStatus`, then `conan_selectProfiles`, then
+`conan_installDependencies`. Building is left to CMake Tools.
+
+### Agents outside VS Code's chat
+
+Agents that run in a terminal, such as Claude Code or Codex, can't call VS Code's tools or
+commands. They use the skill's script, [`scripts/vscode-conan.mjs`](skills/vscode-conan/scripts/vscode-conan.mjs),
+which needs Node.js 18 or later:
+
+```sh
+node vscode-conan.mjs getStatus [--folder <path>]
+node vscode-conan.mjs listProfiles [--folder <path>]
+node vscode-conan.mjs selectProfiles --host <profile> [--host <profile>...] [--build <profile>] [--folder <path>]
+node vscode-conan.mjs installDependencies [--force] [--folder <path>] [--timeout <seconds>]
+```
+
+The script finds the VS Code window whose workspace folder holds `--folder` (by default the
+current directory), runs the operation there, waits, and prints the result as JSON. It exits with
+0 if the operation succeeded, 1 if it failed (an `error`, or an install `outcome` of
+`partiallyFailed` or `userPresetsNotOwned`), and 2 if no VS Code window could be reached for the
+folder. It doesn't ask the user to confirm, because the agent's own permission for running it
+already covers that. The Conan output channel logs each request.
+
+How it reaches VS Code: while `conan.allowExternalCallers` is on (the default), each window with
+a Conan CMake project listens on a named pipe (Windows) or Unix socket. It describes the endpoint
+in a file in a per-user folder:
+
+| Platform | Folder |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\vscode-conan\endpoints` |
+| macOS | `~/Library/Caches/vscode-conan/endpoints` |
+| Linux | `$XDG_CACHE_HOME/vscode-conan/endpoints` (by default `~/.cache/...`) |
+
+The file lists the window's Conan folders and a random token. A request must carry the token, so
+only processes that can read the user's own files can use the endpoint. Those processes can
+already run `conan install` themselves. The file is removed when the window closes. The next
+window to start removes any file whose process has gone.
+
+### Results
+
+The status (`getStatus`, `selectProfiles`) has:
+
+| Field | Meaning |
+| --- | --- |
+| `folder`, `folderName`, `conanfile`, `usesCmakeLayout` | The project. |
+| `hostProfiles`, `buildProfile` | The selected profiles; `hostProfiles` is empty until profiles are chosen. |
+| `upToDate` | The last install still matches the conanfile, `conan.lock`, `conandata.yml`, Conan home and selected profiles. |
+| `installing` | An install is running for the folder. |
+| `configurePresets` | The `conan-*` configure presets available to CMake Tools. |
+| `availableProfiles` | The output of `conan profile list`. Missing if Conan couldn't be run; a hint says why. |
+| `cmakeUsage` | See below. |
+| `hints` | See below. |
+
+The install report (`installDependencies`) has `folder`; `outcome` (`installed`, `upToDate`,
+`partiallyFailed` or `userPresetsNotOwned`); `profiles`, the ones Conan ran for, each with
+`profile`, `succeeded`, `exitCode` and, when it failed, `errorOutput` (the last 20 lines of
+Conan's output, where it reports the error); `configurePresets`; `configuredPreset`, the preset
+CMake Tools was configured with; `cmakeUsage`; and `hints`.
+
+- **`cmakeUsage`**: for each selected host profile, the `findPackages` names and the link
+  `targets` of its direct dependencies, which a `CMakeLists.txt` needs to use them. They come from
+  the summary CMakeDeps prints during the install, so they're the names the recipes define. Each
+  profile's are remembered from its last successful install, so an up-to-date install and the
+  status have them too.
+
+  ```json
+  "cmakeUsage": { "default": { "findPackages": ["greeting"], "targets": ["greeting::greeting"] } }
+  ```
+
+- **`hints`**: what to do next, worded for the caller, and missing when there's nothing to do.
+  They name the operations the way the caller reached them: `conan_installDependencies` for a
+  tool, the `conan.installDependencies` command, or the script's `installDependencies`. A hint
+  about the user's own files says to ask the user first.
 
 ### Commands with arguments
 
@@ -154,6 +255,7 @@ hidden from the Command Palette.
 | --- | --- | --- |
 | `conan.executable` | `conan` | The Conan 2 executable. Use a full path if Conan isn't on PATH. |
 | `conan.autoInstallOnChange` | `false` | Reinstall automatically when the Conan inputs change, instead of asking first. |
+| `conan.allowExternalCallers` | `true` | Let agents outside VS Code's chat run the extension's operations through the skill's script (see [Agents outside VS Code's chat](#agents-outside-vs-codes-chat)). |
 
 ## Development
 
@@ -170,12 +272,17 @@ npm run package   # build the .vsix
   before committing. npm still installs from your mirror locally, because it maps
   `registry.npmjs.org` URLs in the lockfile to your configured registry.
 - **Layout:** `src/core` is plain Node code with no `vscode` dependency: project detection, the
-  Conan command line, `CMakeUserPresets.json` handling and the fingerprint. It's unit-tested
-  with Node's built-in test runner. `src/extension.ts`, `src/cmakeTools.ts` and
-  `src/profilePicker.ts` are the VS Code layer.
+  Conan command line, `CMakeUserPresets.json` handling, the fingerprint, hints and the endpoint
+  for agents outside VS Code. It's unit-tested with Node's built-in test runner.
+  `src/extension.ts`, `src/controller.ts`, `src/tools.ts`, `src/externalCallers.ts`,
+  `src/cmakeTools.ts` and `src/profilePicker.ts` are the VS Code layer. `skills/vscode-conan` is
+  the agent skill, shipped in the `.vsix`, and `.claude-plugin` makes the repository a Claude Code
+  plugin marketplace for it. The skill's script is plain JavaScript with no dependencies. It must
+  stay in step with `src/core/externalEndpoint.ts`, and the unit tests run it against the
+  endpoint.
 - **Extension-host test:** `npm run test:host` runs `src/hostTest` inside your installed VS Code.
-  It uses a throwaway profile and a scratch copy of `samples/hello-app`, and exercises the tools
-  and the commands' argument forms end to end. It needs CMake Tools installed, a `default`
+  It uses a throwaway profile and a scratch copy of `samples/hello-app`, and exercises the tools,
+  the commands' argument forms and the skill's script end to end. It needs CMake Tools installed, a `default`
   Conan profile, and `greeting/0.1` exported to the Conan cache. It opens a VS Code window while
   it runs, so CI doesn't run it.
 - **Debugging:** open the repo in VS Code and press F5. The `compile` task runs the TypeScript

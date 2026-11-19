@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { CMakeUsage } from './cmakeUsage';
 import { ConanCli, ProfileInstallResult } from './conanCli';
 import { ConanProject } from './conanProject';
 import { computeInstallFingerprint } from './fingerprint';
@@ -137,6 +138,7 @@ export async function syncDependencies(
 
   const latest = store.load(directory);
   latest.installFingerprint = allSucceeded ? fingerprint : undefined;
+  latest.cmakeUsage = rememberCMakeUsage(latest.cmakeUsage, state.hostProfiles, results);
   await store.save(directory, latest);
 
   return {
@@ -144,6 +146,27 @@ export async function syncDependencies(
     profiles: results,
     configurePresetNames: presets.flatMap(readConfigurePresetNames),
   };
+}
+
+/**
+ * The CMake usage to remember after an install, for the selected profiles: a profile that succeeded
+ * has this install's (none if CMakeDeps reported none), and one that failed keeps its last.
+ */
+export function rememberCMakeUsage(
+  remembered: Readonly<Record<string, CMakeUsage>> | undefined,
+  hostProfiles: readonly string[],
+  results: readonly ProfileInstallResult[],
+): Record<string, CMakeUsage> | undefined {
+  const usage: Record<string, CMakeUsage> = {};
+  for (const profile of hostProfiles) {
+    const result = results.find(r => r.profile === profile);
+    const kept = result?.exitCode === 0 ? result.cmakeUsage : remembered?.[profile];
+    if (kept) {
+      usage[profile] = kept;
+    }
+  }
+
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 function unique(files: string[]): string[] {

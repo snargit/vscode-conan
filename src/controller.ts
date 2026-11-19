@@ -1,10 +1,13 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { configureWithConanPreset, ensureCMakeToolsWaitsForConan } from './cmakeTools';
+import { CMakeUsage, cmakeUsageOf } from './core/cmakeUsage';
 import { ConanCli } from './core/conanCli';
 import { ConanProject, findConanProject, isConanCMakeProject } from './core/conanProject';
 import { currentConfigurePresetNames, isUpToDate, SyncResult, syncDependencies } from './core/dependencySync';
 import { ChangeWatcher } from './changeWatcher';
+import { Caller, installHints, operationName, statusHints } from './core/hints';
 import { ProfileChoice, validateProfileChoice } from './core/profileChoice';
 import { FolderStateStore } from './core/settings';
 import { pickProfiles } from './profilePicker';
@@ -25,17 +28,35 @@ export interface ConanStatus {
   readonly buildProfile: string;
   /** True if the last install still matches the conanfile, conan.lock and profiles. */
   readonly upToDate: boolean;
+  /** True while a Conan install is running for this folder. */
+  readonly installing: boolean;
   /** conan-* configure presets currently available to CMake Tools. */
   readonly configurePresets: readonly string[];
+  /** The output of 'conan profile list'; missing if Conan couldn't be run (a hint says why). */
+  readonly availableProfiles?: readonly string[];
+  /** Per selected host profile, what CMakeLists.txt needs to use its direct dependencies (from its last successful install). */
+  readonly cmakeUsage?: Readonly<Record<string, CMakeUsage>>;
+  /** What the caller should do next, in words meant for it; missing when there's nothing to do. */
+  readonly hints?: readonly string[];
 }
 
 export interface InstallReport {
   readonly folder: string;
   readonly outcome: SyncResult['outcome'];
-  readonly profiles: ReadonlyArray<{ profile: string; succeeded: boolean; exitCode: number }>;
+  readonly profiles: ReadonlyArray<{
+    profile: string;
+    succeeded: boolean;
+    exitCode: number;
+    /** For a failed profile, the end of Conan's output, where it reports the error. */
+    errorOutput?: string;
+  }>;
   readonly configurePresets: readonly string[];
   /** The preset CMake Tools was configured with, if the configure was started. */
   readonly configuredPreset?: string;
+  /** Per selected host profile, what CMakeLists.txt needs to use its direct dependencies (from its last successful install). */
+  readonly cmakeUsage?: Readonly<Record<string, CMakeUsage>>;
+  /** What the caller should do next, in words meant for it; missing when there's nothing to do. */
+  readonly hints?: readonly string[];
 }
 
 const CHOOSE_PROFILES = 'Choose Profiles...';
@@ -49,7 +70,8 @@ const NOT_NOW = 'Not now';
  * forms and the agent tools; the interactive flows are built on top of them.
  */
 export class ConanController {
-  private readonly busy = new Set<string>();
+  /** The install running for each folder, by project directory. */
+  private readonly running = new Map<string, Promise<InstallReport>>();
   /** Folders whose inputs changed during an install, to recheck when it finishes. */
   private readonly recheckAfterInstall = new Set<string>();
   /** Folders with an out-of-date prompt showing, so changes don't stack prompts. */
@@ -103,9 +125,24 @@ export class ConanController {
     return this.cli(folder).listProfiles(signal);
   }
 
-  async getStatus(folder: vscode.WorkspaceFolder): Promise<ConanStatus> {
+  /**
+   * @param caller decides how the hints name the operations.
+   * @param availableProfiles the output of `conan profile list`, if the caller already has it.
+   */
+  async getStatus(folder: vscode.WorkspaceFolder, caller: Caller = 'command', availableProfiles?: readonly string[]): Promise<ConanStatus> {
     const project = this.project(folder);
+    let profilesError: string | undefined;
+    if (!availableProfiles) {
+      try {
+        availableProfiles = await this.listProfiles(folder);
+      } catch (error) {
+        profilesError = describeError(error);
+      }
+    }
+
     const state = this.store.load(project.rootDirectory);
+    const upToDate = state.hostProfiles.length > 0 && await isUpToDate(project, this.store, this.cli(folder));
+    const installing = this.running.has(project.rootDirectory);
     return {
       folder: folder.uri.fsPath,
       folderName: folder.name,
@@ -113,13 +150,24 @@ export class ConanController {
       usesCmakeLayout: project.usesCmakeLayout,
       hostProfiles: state.hostProfiles,
       buildProfile: state.buildProfile,
-      upToDate: state.hostProfiles.length > 0 && await isUpToDate(project, this.store, this.cli(folder)),
+      upToDate,
+      installing,
       configurePresets: currentConfigurePresetNames(project.rootDirectory),
+      availableProfiles,
+      cmakeUsage: cmakeUsageOf(state.cmakeUsage, state.hostProfiles),
+      hints: statusHints({
+        hostProfiles: state.hostProfiles, upToDate, installing, usesCmakeLayout: project.usesCmakeLayout, profilesError,
+      }, caller),
     };
   }
 
   /** Saves a profile choice (validated against `conan profile list`) and makes CMake Tools wait for Conan. Doesn't install. */
-  async setProfiles(folder: vscode.WorkspaceFolder, hostProfiles: readonly string[], buildProfile?: string): Promise<ConanStatus> {
+  async setProfiles(
+    folder: vscode.WorkspaceFolder,
+    hostProfiles: readonly string[],
+    buildProfile?: string,
+    caller: Caller = 'command',
+  ): Promise<ConanStatus> {
     const project = this.project(folder);
     const available = await this.listProfiles(folder);
     const current = this.store.load(project.rootDirectory);
@@ -129,17 +177,30 @@ export class ConanController {
     }
 
     await this.saveChoice(folder, project, validation.choice);
-    return this.getStatus(folder);
+    return this.getStatus(folder, caller, available);
   }
 
-  /** Runs the install for the folder's saved profiles, then configures CMake Tools. */
-  async install(folder: vscode.WorkspaceFolder, force: boolean, cancellation?: vscode.CancellationToken): Promise<InstallReport> {
+  /**
+   * Runs the install for the folder's saved profiles, then configures CMake Tools. If an install is
+   * already running for the folder, waits for it first.
+   */
+  async install(
+    folder: vscode.WorkspaceFolder,
+    force: boolean,
+    cancellation?: vscode.CancellationToken,
+    caller: Caller = 'command',
+  ): Promise<InstallReport> {
     const project = this.project(folder);
     if (this.store.load(project.rootDirectory).hostProfiles.length === 0) {
-      throw new ConanRequestError(`No Conan profiles are selected for '${folder.name}'. Select some first (conan_selectProfiles or "Conan: Select Profiles...").`);
+      throw new ConanRequestError(`No Conan profiles are selected for '${folder.name}'. `
+        + `Select some first (${operationName(caller, 'selectProfiles')}, or "Conan: Select Profiles..." in the Command Palette).`);
     }
 
-    return this.sync(folder, project, force, cancellation);
+    for (let running = this.running.get(project.rootDirectory); running; running = this.running.get(project.rootDirectory)) {
+      await running.catch(() => undefined);
+    }
+
+    return this.sync(folder, project, force, cancellation, caller);
   }
 
   // ---- Interactive flows -----------------------------------------------------------------------
@@ -268,62 +329,91 @@ export class ConanController {
     }
   }
 
-  private async sync(
+  private sync(
     folder: vscode.WorkspaceFolder,
     project: ConanProject,
     force: boolean,
     cancellation?: vscode.CancellationToken,
+    caller: Caller = 'command',
   ): Promise<InstallReport> {
     const directory = project.rootDirectory;
-    if (this.busy.has(directory)) {
-      throw new ConanRequestError(`A Conan install is already running for '${folder.name}'.`);
+    if (this.running.has(directory)) {
+      return Promise.reject(new ConanRequestError(`A Conan install is already running for '${folder.name}'.`));
     }
 
-    this.busy.add(directory);
-    try {
-      let result: SyncResult;
-      if (!force && await isUpToDate(project, this.store, this.cli(folder))) {
-        result = { outcome: 'upToDate', profiles: [], configurePresetNames: currentConfigurePresetNames(directory) };
-      } else {
-        if (!project.usesCmakeLayout) {
-          this.output.appendLine(`Warning: ${project.conanfilePath} doesn't appear to use cmake_layout. `
-            + 'Without it, CMake presets for different profiles will have clashing names.');
-        }
-
-        this.output.show(true);
-        result = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: `Conan: installing dependencies for ${folder.name}`, cancellable: true },
-          (_progress, token) => {
-            const abort = new AbortController();
-            token.onCancellationRequested(() => abort.abort());
-            cancellation?.onCancellationRequested(() => abort.abort());
-            // Already known to be out of date (or forced), so don't check again.
-            return syncDependencies(project, this.store, this.cli(folder), {
-              force: true,
-              onLine: line => this.output.appendLine(line),
-              signal: abort.signal,
-            });
-          });
-        this.reportResult(folder, result);
-      }
-
-      const configuredPreset = result.outcome === 'userPresetsNotOwned'
-        ? undefined
-        : await configureWithConanPreset(result.configurePresetNames, line => this.output.appendLine(line));
-
-      return {
-        folder: folder.uri.fsPath,
-        outcome: result.outcome,
-        profiles: result.profiles.map(p => ({ profile: p.profile, succeeded: p.exitCode === 0, exitCode: p.exitCode })),
-        configurePresets: result.configurePresetNames,
-        configuredPreset,
-      };
-    } finally {
-      this.busy.delete(directory);
+    const running = this.runSync(folder, project, force, cancellation, caller).finally(() => {
+      this.running.delete(directory);
       if (this.recheckAfterInstall.delete(directory)) {
         void this.onInputsChanged(folder, ['files changed during the install']);
       }
+    });
+    this.running.set(directory, running);
+    return running;
+  }
+
+  private async runSync(
+    folder: vscode.WorkspaceFolder,
+    project: ConanProject,
+    force: boolean,
+    cancellation: vscode.CancellationToken | undefined,
+    caller: Caller,
+  ): Promise<InstallReport> {
+    const directory = project.rootDirectory;
+    let result: SyncResult;
+    if (!force && await isUpToDate(project, this.store, this.cli(folder))) {
+      result = { outcome: 'upToDate', profiles: [], configurePresetNames: currentConfigurePresetNames(directory) };
+    } else {
+      if (!project.usesCmakeLayout) {
+        this.output.appendLine(`Warning: ${project.conanfilePath} doesn't appear to use cmake_layout. `
+          + 'Without it, CMake presets for different profiles will have clashing names.');
+      }
+
+      this.output.show(true);
+      result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Conan: installing dependencies for ${folder.name}`, cancellable: true },
+        (_progress, token) => {
+          const abort = new AbortController();
+          token.onCancellationRequested(() => abort.abort());
+          cancellation?.onCancellationRequested(() => abort.abort());
+          // Already known to be out of date (or forced), so don't check again.
+          return syncDependencies(project, this.store, this.cli(folder), {
+            force: true,
+            onLine: line => this.output.appendLine(line),
+            signal: abort.signal,
+          });
+        });
+      this.reportResult(folder, result);
     }
+
+    const configuredPreset = result.outcome === 'userPresetsNotOwned'
+      ? undefined
+      : await configureWithConanPreset(result.configurePresetNames, line => this.output.appendLine(line));
+
+    const state = this.store.load(directory);
+    return {
+      folder: folder.uri.fsPath,
+      outcome: result.outcome,
+      profiles: result.profiles.map(p => ({
+        profile: p.profile,
+        succeeded: p.exitCode === 0,
+        exitCode: p.exitCode,
+        errorOutput: p.exitCode === 0 ? undefined : p.errorOutput,
+      })),
+      configurePresets: result.configurePresetNames,
+      configuredPreset,
+      cmakeUsage: cmakeUsageOf(state.cmakeUsage, state.hostProfiles),
+      hints: installHints({
+        outcome: result.outcome,
+        profiles: result.profiles.map(p => ({
+          profile: p.profile,
+          succeeded: p.exitCode === 0,
+          hasPresets: p.presetsFile !== undefined && fs.existsSync(p.presetsFile),
+        })),
+        usesCmakeLayout: project.usesCmakeLayout,
+        configurePresets: result.configurePresetNames,
+        configuredPreset,
+      }, caller),
+    };
   }
 
   /**
@@ -339,7 +429,7 @@ export class ConanController {
       }
 
       const directory = project.rootDirectory;
-      if (this.busy.has(directory)) {
+      if (this.running.has(directory)) {
         this.recheckAfterInstall.add(directory);
         return;
       }

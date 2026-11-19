@@ -23,7 +23,7 @@ interface InstallInput extends FolderInput {
 export function registerTools(controller: ConanController): vscode.Disposable[] {
   return [
     vscode.lm.registerTool<FolderInput>('conan_getStatus', {
-      invoke: options => run(() => controller.getStatus(controller.resolveFolder(options.input.folder))),
+      invoke: options => run(() => controller.getStatus(controller.resolveFolder(options.input.folder), 'tool')),
     }),
 
     vscode.lm.registerTool<FolderInput>('conan_listProfiles', {
@@ -47,7 +47,7 @@ export function registerTools(controller: ConanController): vscode.Disposable[] 
         };
       },
       invoke: options => run(() => controller.setProfiles(
-        controller.resolveFolder(options.input.folder), options.input.hostProfiles, options.input.buildProfile)),
+        controller.resolveFolder(options.input.folder), options.input.hostProfiles, options.input.buildProfile, 'tool')),
     }),
 
     vscode.lm.registerTool<InstallInput>('conan_installDependencies', {
@@ -62,7 +62,7 @@ export function registerTools(controller: ConanController): vscode.Disposable[] 
         },
       }),
       invoke: (options, token) => run(() =>
-        controller.install(controller.resolveFolder(options.input.folder), options.input.force ?? false, token)),
+        controller.install(controller.resolveFolder(options.input.folder), options.input.force ?? false, token, 'tool')),
     }),
   ];
 }

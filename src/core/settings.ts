@@ -1,3 +1,5 @@
+import { CMakeUsage } from './cmakeUsage';
+
 /** What the user chose for a folder, plus the bookkeeping the extension keeps for it. */
 export interface FolderState {
   /** Host profiles to install (`-pr:h`), one install each. Empty until the user has chosen. */
@@ -11,6 +13,8 @@ export interface FolderState {
   firstRunPromptShown: boolean;
   /** Fingerprint of the last fully successful install. */
   installFingerprint?: string;
+  /** Per host profile, the CMake names of its direct dependencies from its last successful install. */
+  cmakeUsage?: Record<string, CMakeUsage>;
 }
 
 export function defaultFolderState(): FolderState {

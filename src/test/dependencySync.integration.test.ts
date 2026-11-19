@@ -84,6 +84,69 @@ describe('syncDependencies (integration)', { skip: hasConan ? false : 'Conan 2 i
     }
   });
 
+  it("reports Conan's error for a failed profile", async () => {
+    const dir = new TempDirectory();
+    try {
+      dir.write('conanfile.txt', '[layout]\ncmake_layout\n[nosuchsection]\n');
+      dir.write('CMakeLists.txt', 'cmake_minimum_required(VERSION 3.23)\nproject(app CXX)\n');
+      const project = findConanProject(dir.path)!;
+      const store = new MemoryFolderStateStore();
+      await store.save(dir.path, { ...store.load(dir.path), hostProfiles: ['default'] });
+
+      const result = await syncDependencies(project, store, new ConanCli('conan', dir.path), { force: false, onLine: () => {} });
+
+      assert.equal(result.outcome, 'partiallyFailed');
+      assert.equal(result.profiles.length, 1);
+      assert.match(result.profiles[0].errorOutput ?? '', /ERROR/);
+      assert.match(result.profiles[0].errorOutput ?? '', /nosuchsection/);
+    } finally {
+      dir.dispose();
+    }
+  });
+
+  it('remembers the find_package names and targets of the direct dependencies', async () => {
+    // A header-only package (nothing to compile), whose CMake names differ from its package name.
+    const dir = new TempDirectory();
+    dir.write(path.join('dep', 'conanfile.py'), [
+      'from conan import ConanFile',
+      '',
+      'class Dep(ConanFile):',
+      '    name = "vscode-conan-testdep"',
+      '    version = "0.1"',
+      '    package_type = "header-library"',
+      '',
+      '    def package_info(self):',
+      '        self.cpp_info.bindirs = []',
+      '        self.cpp_info.libdirs = []',
+      '        self.cpp_info.set_property("cmake_file_name", "VsCodeConanTestDep")',
+      '        self.cpp_info.set_property("cmake_target_name", "VsCodeConanTestDep::headers")',
+      '',
+    ].join('\n'));
+    dir.write(path.join('app', 'conanfile.txt'), '[requires]\nvscode-conan-testdep/0.1\n[generators]\nCMakeToolchain\nCMakeDeps\n[layout]\ncmake_layout\n');
+    dir.write(path.join('app', 'CMakeLists.txt'), 'cmake_minimum_required(VERSION 3.23)\nproject(app CXX)\n');
+    const app = path.join(dir.path, 'app');
+    assert.equal(spawnSync('conan', ['export', path.join(dir.path, 'dep')], { cwd: dir.path, shell: false }).status, 0);
+    try {
+      const project = findConanProject(app)!;
+      const store = new MemoryFolderStateStore();
+      await store.save(app, { ...store.load(app), hostProfiles: ['default'] });
+      const cli = new ConanCli('conan', app);
+      const expected = { default: { findPackages: ['VsCodeConanTestDep'], targets: ['VsCodeConanTestDep::headers'] } };
+
+      const result = await syncDependencies(project, store, cli, { force: false, onLine: () => {} });
+      assert.equal(result.outcome, 'installed');
+      assert.deepEqual(result.profiles[0].cmakeUsage, expected.default);
+      assert.deepEqual(store.load(app).cmakeUsage, expected);
+
+      // Kept through an up-to-date install.
+      assert.equal((await syncDependencies(project, store, cli, { force: false, onLine: () => {} })).outcome, 'upToDate');
+      assert.deepEqual(store.load(app).cmakeUsage, expected);
+    } finally {
+      spawnSync('conan', ['remove', 'vscode-conan-testdep/*', '-c'], { cwd: dir.path, shell: false });
+      dir.dispose();
+    }
+  });
+
   it('refuses to overwrite a hand-written CMakeUserPresets.json', async () => {
     const dir = new TempDirectory();
     try {

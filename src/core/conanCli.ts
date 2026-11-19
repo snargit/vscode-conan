@@ -1,4 +1,6 @@
 import * as path from 'node:path';
+import { CMakeUsage, CMakeUsageCollector } from './cmakeUsage';
+import { OutputTail } from './outputTail';
 import { runProcess } from './process';
 
 /** Arguments for a single `conan install` of one host profile. */
@@ -16,6 +18,10 @@ export interface ProfileInstallResult {
   readonly exitCode: number;
   /** The CMakePresets.json Conan generated for this profile, if the install succeeded. */
   readonly presetsFile?: string;
+  /** If the install failed, the end of Conan's output, where it reports the error. */
+  readonly errorOutput?: string;
+  /** If the install succeeded, the find_package names and targets CMakeDeps reported for the direct dependencies. */
+  readonly cmakeUsage?: CMakeUsage;
 }
 
 export function buildInstallArguments(request: ConanInstallRequest): string[] {
@@ -82,18 +88,29 @@ export class ConanCli {
 
   /** Runs the install. Conan's log goes to `onLine`; the JSON graph on stdout is parsed. */
   async install(request: ConanInstallRequest, onLine: (line: string) => void, signal?: AbortSignal): Promise<ProfileInstallResult> {
+    const tail = new OutputTail();
+    const usage = new CMakeUsageCollector();
     const result = await runProcess(this.executable, buildInstallArguments(request), {
       cwd: request.projectDirectory,
-      onLine,
+      onLine: line => {
+        tail.add(line);
+        usage.add(line);
+        onLine(line);
+      },
       streamStdout: false,
       signal,
     });
 
-    const generatorsFolder = result.exitCode === 0 ? parseGeneratorsFolder(result.stdout) : undefined;
+    if (result.exitCode !== 0) {
+      return { profile: request.hostProfile, exitCode: result.exitCode, errorOutput: tail.text() };
+    }
+
+    const generatorsFolder = parseGeneratorsFolder(result.stdout);
     return {
       profile: request.hostProfile,
       exitCode: result.exitCode,
       presetsFile: generatorsFolder ? path.join(generatorsFolder, 'CMakePresets.json') : undefined,
+      cmakeUsage: usage.result(),
     };
   }
 }

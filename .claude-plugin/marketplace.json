@@ -1,0 +1,12 @@
+{
+  "name": "vscode-conan",
+  "description": "The Conan for CMake Tools agent skill: Conan dependencies for CMake projects in VS Code.",
+  "owner": { "name": "Conan for CMake Tools", "url": "https://github.com/snargit/vscode-conan" },
+  "plugins": [
+    {
+      "name": "vscode-conan",
+      "source": "./",
+      "description": "Teaches agents to install a VS Code CMake project's Conan dependencies through the Conan for CMake Tools extension, instead of running conan install in a terminal."
+    }
+  ]
+}
