@@ -81,7 +81,7 @@ export class ExternalEndpoint {
 
     const id = randomBytes(8).toString('hex');
     const token = randomBytes(32).toString('hex');
-    const socket = process.platform === 'win32' ? `\\\\.\\pipe\\vscode-conan-${id}` : path.join(directory, `${id}.sock`);
+    const socket = socketPath(directory, id);
     const server = net.createServer(connection => serve(connection, token, handler, describeError));
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
@@ -130,6 +130,35 @@ export class ExternalEndpoint {
       removeFile(this.socket);
     }
   }
+}
+
+/**
+ * A named pipe on Windows; elsewhere a Unix socket beside the endpoint file. A Unix socket's path
+ * is limited (104 bytes on macOS, 108 on Linux, counting the terminating NUL), so when the
+ * endpoints folder is too deep the socket goes in a shorter per-user folder instead. The endpoint
+ * file records where it is.
+ */
+export function socketPath(
+  directory: string,
+  id: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  temporary: string = os.tmpdir(),
+): string {
+  if (platform === 'win32') {
+    return `\\\\.\\pipe\\vscode-conan-${id}`;
+  }
+
+  const beside = path.posix.join(directory, `${id}.sock`);
+  const limit = platform === 'linux' ? 107 : 103;
+  if (Buffer.byteLength(beside) <= limit) {
+    return beside;
+  }
+
+  // XDG_RUNTIME_DIR is the user's own; macOS's os.tmpdir() is per user too. Elsewhere the socket
+  // is made private once it exists, and a request needs the token from the endpoint file anyway.
+  const short = (platform === 'linux' && env.XDG_RUNTIME_DIR) || temporary;
+  return path.posix.join(short, `vscode-conan-${id}.sock`);
 }
 
 function serve(connection: net.Socket, token: string, handler: EndpointHandler, describeError: DescribeError): void {

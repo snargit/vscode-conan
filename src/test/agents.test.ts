@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import { CMakeUsage, CMakeUsageCollector, cmakeUsageOf } from '../core/cmakeUsage';
 import { ProfileInstallResult } from '../core/conanCli';
 import { rememberCMakeUsage } from '../core/dependencySync';
-import { endpointsDirectory, EndpointRequest, ExternalEndpoint, PROTOCOL_VERSION } from '../core/externalEndpoint';
+import { endpointsDirectory, EndpointRequest, ExternalEndpoint, PROTOCOL_VERSION, socketPath } from '../core/externalEndpoint';
 import { installHints, InstallFacts, operationName, statusHints } from '../core/hints';
 import { OutputTail } from '../core/outputTail';
 import { TempDirectory } from './helpers';
@@ -155,6 +155,25 @@ describe('endpointsDirectory', () => {
   });
 });
 
+describe('socketPath', () => {
+  const id = '0123456789abcdef';
+
+  it('is a named pipe on Windows', () => {
+    assert.equal(socketPath('C:\\deep', id, 'win32'), `\\\\.\\pipe\\vscode-conan-${id}`);
+  });
+
+  it('is beside the endpoint file when the path fits', () => {
+    assert.equal(socketPath('/home/u/.cache/vscode-conan/endpoints', id, 'linux', {}, '/tmp'), `/home/u/.cache/vscode-conan/endpoints/${id}.sock`);
+  });
+
+  it('moves to a shorter per-user folder when the path would be too long', () => {
+    const deep = '/' + 'd'.repeat(90);
+    assert.equal(socketPath(deep, id, 'darwin', {}, '/var/folders/x/T'), `/var/folders/x/T/vscode-conan-${id}.sock`);
+    assert.equal(socketPath(deep, id, 'linux', { XDG_RUNTIME_DIR: '/run/user/1000' }, '/tmp'), `/run/user/1000/vscode-conan-${id}.sock`);
+    assert.equal(socketPath(deep, id, 'linux', {}, '/tmp'), `/tmp/vscode-conan-${id}.sock`);
+  });
+});
+
 const SCRIPT = path.resolve(__dirname, '..', '..', 'skills', 'vscode-conan', 'scripts', 'vscode-conan.mjs');
 
 /** Runs the skill's script, as an agent would, with `env` added to this process's environment. */
@@ -270,6 +289,26 @@ describe('the external endpoint and the skill script', () => {
       });
       assert.match(JSON.parse(reply).error, /Wrong token/);
     });
+  });
+
+  it('works from an endpoints folder too deep for a socket beside it', { skip: process.platform === 'win32' ? 'named pipes have no path limit' : false }, async () => {
+    const dir = new TempDirectory();
+    try {
+      const endpoints = path.join(dir.path, 'x'.repeat(60), 'y'.repeat(60));
+      const endpoint = await ExternalEndpoint.start(async () => ({ deep: true }), String, endpoints);
+      let info: { socket: string } | undefined;
+      try {
+        endpoint.setFolders([dir.path]);
+        info = JSON.parse(fs.readFileSync(endpoint.infoFile, 'utf8')) as { socket: string };
+        assert.equal(path.dirname(info.socket) === endpoints, false, info.socket);
+        assert.deepEqual((await runScript(['getStatus', '--folder', dir.path], { VSCODE_CONAN_ENDPOINTS_DIR: endpoints })).output, { deep: true });
+      } finally {
+        endpoint.dispose();
+      }
+      assert.equal(fs.existsSync(info.socket), false, 'the socket outlived the endpoint');
+    } finally {
+      dir.dispose();
+    }
   });
 
   it("finds the endpoint in the platform's default folder", async () => {
